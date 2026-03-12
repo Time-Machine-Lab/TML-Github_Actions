@@ -56,7 +56,9 @@ jobs:
 
 ## 工作原理
 
-- 默认：比较最近两次提交（`HEAD~1..HEAD`）在 `products_dir/` 下的变更，提取受影响的 `<product>` 并按矩阵并行部署。
+- 默认：
+  - `push` 事件：比较本次推送范围（`github.event.before..github.sha`）在 `products_dir/` 下的变更，提取受影响的 `<product>` 并按矩阵并行部署。
+  - 其他事件：若存在上一提交则使用 `HEAD~1..HEAD` 作为兜底 diff 范围。
 - `force_deploy: true`：忽略 diff，部署 `products_dir` 下所有产品目录。
 
 ## 注意事项
@@ -64,3 +66,4 @@ jobs:
 - 该 Workflow 使用 `sshpass` 进行密码登录；如需更安全的 SSH Key 方式，我可以继续帮你改造。
 - 远程服务器需安装 `rsync`，并允许 `SERVER_USER` 写入 `deploy_path`。
 - `reload_nginx` 会在远程服务器执行：`docker exec <nginx_container> nginx -s reload || true`，请确保容器名与 nginx 命令符合实际环境。
+- 部署阶段会将服务器写入 `~/.ssh/known_hosts` 并启用 Host Key 校验；如服务器 Host Key 变更，需要更新对应配置。

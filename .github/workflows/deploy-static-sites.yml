@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Detect changed products
         id: changes
@@ -62,6 +62,16 @@ jobs:
           set -euo pipefail
 
           PRODUCTS_DIR="${{ inputs.products_dir }}"
+          PRODUCTS_DIR="${PRODUCTS_DIR%/}"
+
+          if ! [[ "$PRODUCTS_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "Invalid products_dir: $PRODUCTS_DIR"
+            exit 1
+          fi
+          if [[ "$PRODUCTS_DIR" == -* ]]; then
+            echo "products_dir must not start with '-'"
+            exit 1
+          fi
 
           if [ ! -d "$PRODUCTS_DIR" ]; then
             echo "Products dir not found: $PRODUCTS_DIR"
@@ -73,23 +83,36 @@ jobs:
           if [ "${{ inputs.force_deploy }}" = "true" ]; then
             PRODUCTS=$(find "$PRODUCTS_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R -s -c 'split("\n")[:-1]')
           else
-            if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-              PRODUCTS=$(find "$PRODUCTS_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R -s -c 'split("\n")[:-1]')
-            else
-              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- "$PRODUCTS_DIR/" || true)
+            EVENT_NAME="${{ github.event_name }}"
+            BEFORE_SHA="${{ github.event.before }}"
+            AFTER_SHA="${{ github.sha }}"
 
-              if [ -z "$CHANGED_FILES" ]; then
-                PRODUCTS='[]'
-              else
-                PRODUCTS=$(echo "$CHANGED_FILES" | awk -v dir="$PRODUCTS_DIR" '
-                  index($0, dir"/")==1 {
-                    rest = substr($0, length(dir)+2)
-                    split(rest, parts, "/")
-                    if (parts[1] != "") print parts[1]
-                  }' | sort -u | jq -R -s -c 'split("\n")[:-1]')
-              fi
+            if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" -- "$PRODUCTS_DIR/" || true)
+            elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- "$PRODUCTS_DIR/" || true)
+            else
+              CHANGED_FILES=""
+            fi
+
+            if [ -z "${CHANGED_FILES:-}" ]; then
+              PRODUCTS='[]'
+            else
+              PRODUCTS=$(echo "$CHANGED_FILES" | awk -v dir="$PRODUCTS_DIR" '
+                index($0, dir"/")==1 {
+                  rest = substr($0, length(dir)+2)
+                  split(rest, parts, "/")
+                  if (parts[1] != "") print parts[1]
+                }' | sort -u | jq -R -s -c 'split("\n")[:-1]')
             fi
           fi
+
+          PRODUCTS=$(echo "$PRODUCTS" | jq -r '.[]' | while IFS= read -r product; do
+            [ -z "$product" ] && continue
+            if [[ "$product" =~ ^[a-zA-Z0-9._][a-zA-Z0-9._-]*$ ]] && [ -d "$PRODUCTS_DIR/$product" ]; then
+              echo "$product"
+            fi
+          done | jq -R -s -c 'split("\n")[:-1]')
 
           echo "products=$PRODUCTS" >> "$GITHUB_OUTPUT"
 
@@ -114,6 +137,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate inputs
+        shell: bash
+        env:
+          PRODUCTS_DIR: ${{ inputs.products_dir }}
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          PRODUCT: ${{ matrix.product }}
+        run: |
+          set -euo pipefail
+
+          PRODUCTS_DIR="${PRODUCTS_DIR%/}"
+          DEPLOY_PATH="${DEPLOY_PATH%/}"
+
+          fail() { echo "$1" >&2; exit 1; }
+
+          [[ -n "$PRODUCTS_DIR" ]] || fail "products_dir is empty"
+          [[ "$PRODUCTS_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]] || fail "Invalid products_dir: $PRODUCTS_DIR"
+          [[ "$PRODUCTS_DIR" != -* ]] || fail "products_dir must not start with '-'"
+          [[ -n "$DEPLOY_PATH" ]] || fail "deploy_path is empty"
+          [[ "$DEPLOY_PATH" =~ ^[a-zA-Z0-9._/-]+$ ]] || fail "Invalid deploy_path: $DEPLOY_PATH"
+          [[ "$DEPLOY_PATH" != -* ]] || fail "deploy_path must not start with '-'"
+          [[ -n "$PRODUCT" ]] || fail "product is empty"
+          [[ "$PRODUCT" =~ ^[a-zA-Z0-9._][a-zA-Z0-9._-]*$ ]] || fail "Invalid product: $PRODUCT"
+
+          echo "PRODUCTS_DIR=$PRODUCTS_DIR" >> "$GITHUB_ENV"
+          echo "DEPLOY_PATH=$DEPLOY_PATH" >> "$GITHUB_ENV"
+          echo "PRODUCT=$PRODUCT" >> "$GITHUB_ENV"
+
+          if [ ! -d "$PRODUCTS_DIR/$PRODUCT" ]; then
+            echo "Source directory not found: $PRODUCTS_DIR/$PRODUCT (skipping)"
+            echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
       - name: Install sshpass
         run: |
           sudo apt-get update
@@ -128,12 +184,20 @@ jobs:
         env:
           SSHPASS: ${{ secrets.SERVER_PASS }}
         run: |
-          echo "Deploying product: ${{ matrix.product }}"
+          set -euo pipefail
+
+          if [ "${SKIP_DEPLOY:-false}" = "true" ]; then
+            echo "Skipping deploy for $PRODUCT"
+            exit 0
+          fi
+
+          echo "Deploying product: $PRODUCT"
           sshpass -e rsync -avz --delete \
             --exclude='.git*' \
-            -e "ssh -o StrictHostKeyChecking=no" \
-            "${{ inputs.products_dir }}/${{ matrix.product }}/" \
-            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ inputs.deploy_path }}/${{ matrix.product }}/"
+            -e "ssh" \
+            -- \
+            "$PRODUCTS_DIR/$PRODUCT/" \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:$DEPLOY_PATH/$PRODUCT/"
 
   reload-nginx:
     needs: deploy
@@ -150,10 +214,25 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
 
+      - name: Validate inputs
+        shell: bash
+        env:
+          NGINX_CONTAINER: ${{ inputs.nginx_container }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "$1" >&2; exit 1; }
+
+          [[ -n "$NGINX_CONTAINER" ]] || fail "nginx_container is empty"
+          [[ "$NGINX_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail "Invalid nginx_container: $NGINX_CONTAINER"
+          echo "NGINX_CONTAINER=$NGINX_CONTAINER" >> "$GITHUB_ENV"
+
       - name: Reload Nginx
         env:
           SSHPASS: ${{ secrets.SERVER_PASS }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=no \
+          set -euo pipefail
+
+          sshpass -e ssh \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "docker exec ${{ inputs.nginx_container }} nginx -s reload || true"
+            "docker exec $NGINX_CONTAINER nginx -s reload || true"
