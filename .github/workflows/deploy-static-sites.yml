@@ -1,0 +1,238 @@
+name: Deploy Static Sites
+
+on:
+  workflow_call:
+    inputs:
+      products_dir:
+        description: Root directory that contains product folders.
+        type: string
+        required: false
+        default: products
+      deploy_path:
+        description: Remote deploy base path.
+        type: string
+        required: false
+        default: /var/www/static-sites
+      force_deploy:
+        description: Deploy all product folders, ignoring git diff.
+        type: boolean
+        required: false
+        default: false
+      max_parallel:
+        description: Max parallel rsync jobs.
+        type: number
+        required: false
+        default: 3
+      reload_nginx:
+        description: Reload nginx after deploy.
+        type: boolean
+        required: false
+        default: true
+      nginx_container:
+        description: Docker container name that runs nginx.
+        type: string
+        required: false
+        default: static-sites
+    secrets:
+      SERVER_HOST:
+        required: true
+      SERVER_USER:
+        required: true
+      SERVER_PASS:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed_products: ${{ steps.changes.outputs.products }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed products
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRODUCTS_DIR="${{ inputs.products_dir }}"
+          PRODUCTS_DIR="${PRODUCTS_DIR%/}"
+
+          if ! [[ "$PRODUCTS_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "Invalid products_dir: $PRODUCTS_DIR"
+            exit 1
+          fi
+          if [[ "$PRODUCTS_DIR" == -* ]]; then
+            echo "products_dir must not start with '-'"
+            exit 1
+          fi
+
+          if [ ! -d "$PRODUCTS_DIR" ]; then
+            echo "Products dir not found: $PRODUCTS_DIR"
+            echo 'products=[]' >> "$GITHUB_OUTPUT"
+            echo 'has_changes=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ inputs.force_deploy }}" = "true" ]; then
+            PRODUCTS=$(find "$PRODUCTS_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R -s -c 'split("\n")[:-1]')
+          else
+            EVENT_NAME="${{ github.event_name }}"
+            BEFORE_SHA="${{ github.event.before }}"
+            AFTER_SHA="${{ github.sha }}"
+
+            if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" -- "$PRODUCTS_DIR/" || true)
+            elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- "$PRODUCTS_DIR/" || true)
+            else
+              CHANGED_FILES=""
+            fi
+
+            if [ -z "${CHANGED_FILES:-}" ]; then
+              PRODUCTS='[]'
+            else
+              PRODUCTS=$(echo "$CHANGED_FILES" | awk -v dir="$PRODUCTS_DIR" '
+                index($0, dir"/")==1 {
+                  rest = substr($0, length(dir)+2)
+                  split(rest, parts, "/")
+                  if (parts[1] != "") print parts[1]
+                }' | sort -u | jq -R -s -c 'split("\n")[:-1]')
+            fi
+          fi
+
+          PRODUCTS=$(echo "$PRODUCTS" | jq -r '.[]' | while IFS= read -r product; do
+            [ -z "$product" ] && continue
+            if [[ "$product" =~ ^[a-zA-Z0-9._][a-zA-Z0-9._-]*$ ]] && [ -d "$PRODUCTS_DIR/$product" ]; then
+              echo "$product"
+            fi
+          done | jq -R -s -c 'split("\n")[:-1]')
+
+          echo "products=$PRODUCTS" >> "$GITHUB_OUTPUT"
+
+          PRODUCT_COUNT=$(echo "$PRODUCTS" | jq 'length')
+          if [ "$PRODUCT_COUNT" -eq 0 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Changed products: $PRODUCTS"
+
+  deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        product: ${{ fromJson(needs.detect-changes.outputs.changed_products) }}
+      max-parallel: ${{ inputs.max_parallel }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs
+        shell: bash
+        env:
+          PRODUCTS_DIR: ${{ inputs.products_dir }}
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          PRODUCT: ${{ matrix.product }}
+        run: |
+          set -euo pipefail
+
+          PRODUCTS_DIR="${PRODUCTS_DIR%/}"
+          DEPLOY_PATH="${DEPLOY_PATH%/}"
+
+          fail() { echo "$1" >&2; exit 1; }
+
+          [[ -n "$PRODUCTS_DIR" ]] || fail "products_dir is empty"
+          [[ "$PRODUCTS_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]] || fail "Invalid products_dir: $PRODUCTS_DIR"
+          [[ "$PRODUCTS_DIR" != -* ]] || fail "products_dir must not start with '-'"
+          [[ -n "$DEPLOY_PATH" ]] || fail "deploy_path is empty"
+          [[ "$DEPLOY_PATH" =~ ^[a-zA-Z0-9._/-]+$ ]] || fail "Invalid deploy_path: $DEPLOY_PATH"
+          [[ "$DEPLOY_PATH" != -* ]] || fail "deploy_path must not start with '-'"
+          [[ -n "$PRODUCT" ]] || fail "product is empty"
+          [[ "$PRODUCT" =~ ^[a-zA-Z0-9._][a-zA-Z0-9._-]*$ ]] || fail "Invalid product: $PRODUCT"
+
+          echo "PRODUCTS_DIR=$PRODUCTS_DIR" >> "$GITHUB_ENV"
+          echo "DEPLOY_PATH=$DEPLOY_PATH" >> "$GITHUB_ENV"
+          echo "PRODUCT=$PRODUCT" >> "$GITHUB_ENV"
+
+          if [ ! -d "$PRODUCTS_DIR/$PRODUCT" ]; then
+            echo "Source directory not found: $PRODUCTS_DIR/$PRODUCT (skipping)"
+            echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy ${{ matrix.product }}
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASS }}
+        run: |
+          set -euo pipefail
+
+          if [ "${SKIP_DEPLOY:-false}" = "true" ]; then
+            echo "Skipping deploy for $PRODUCT"
+            exit 0
+          fi
+
+          echo "Deploying product: $PRODUCT"
+          sshpass -e rsync -avz --delete \
+            --exclude='.git*' \
+            -e "ssh" \
+            -- \
+            "$PRODUCTS_DIR/$PRODUCT/" \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:$DEPLOY_PATH/$PRODUCT/"
+
+  reload-nginx:
+    needs: deploy
+    if: ${{ inputs.reload_nginx }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Validate inputs
+        shell: bash
+        env:
+          NGINX_CONTAINER: ${{ inputs.nginx_container }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "$1" >&2; exit 1; }
+
+          [[ -n "$NGINX_CONTAINER" ]] || fail "nginx_container is empty"
+          [[ "$NGINX_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail "Invalid nginx_container: $NGINX_CONTAINER"
+          echo "NGINX_CONTAINER=$NGINX_CONTAINER" >> "$GITHUB_ENV"
+
+      - name: Reload Nginx
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASS }}
+        run: |
+          set -euo pipefail
+
+          sshpass -e ssh \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "docker exec $NGINX_CONTAINER nginx -s reload || true"

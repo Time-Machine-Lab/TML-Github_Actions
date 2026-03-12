@@ -1,6 +1,6 @@
 ---
 name: github workflow actions
-description: This skill provides guidelines for developing GitHub Actions and Reusable Workflows in the TML-Github-Actions repository. Use it when creating new actions, debugging workflows, or writing documentation to ensure compliance with project standards.
+description: This skill provides guidelines for developing GitHub Actions and Reusable Workflows in the TML-Github_Actions repository. Use it when creating new actions, debugging workflows, or writing documentation to ensure compliance with project standards.
 metadata:
   author: tml
 ---

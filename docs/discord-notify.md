@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 2  # 必须设置为 2 或 0，以便统计 Push 事件的变更
 
       - name: Send Discord Notification
-        uses: Time-Machine-Lab/TML-Github-Actions/actions/discord-github-notify@main
+        uses: Time-Machine-Lab/TML-Github_Actions/actions/discord-github-notify@main
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
 ```
