@@ -76,3 +76,11 @@ jobs:
 
 1. **Checkout Depth**: 务必在 `actions/checkout` 中设置 `fetch-depth: 2`，否则无法计算 Push 事件的代码变更统计。
 2. **Secrets**: 请在仓库 Settings -> Secrets and variables -> Actions 中添加 `DISCORD_WEBHOOK_URL`。
+
+## 🔐 私有仓库特殊配置
+
+如果您的仓库是私有的，请确保：
+
+1. **Action 访问权限**：若本 Action 仓库也是私有的，请在 `Settings -> Actions -> General -> Access` 中开启跨仓库访问权限。
+2. **Token 权限**：工作流中的 `GITHUB_TOKEN` 需具备 `contents: read` 权限，以便 Action 能够读取代码差异。
+3. **链接预览**：由于安全限制，Discord 无法自动抓取私有仓库链接的预览图，这是正常现象。内容中的链接仍可点击，但需要您在浏览器中登录 GitHub。

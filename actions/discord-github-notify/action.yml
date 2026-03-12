@@ -15,14 +15,21 @@ runs:
     - name: 获取事件类型与统计
       id: info
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
       run: |
+        # 配置 Git 使用 Token 访问，解决私有仓库 Git 操作权限问题
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
         EVENT_TYPE="${{ github.event_name }}"
         ACTION_TYPE="${{ github.event.action }}"
+        IS_PRIVATE="${{ github.event.repository.private }}"
         
-        echo "Processing event: $EVENT_TYPE ($ACTION_TYPE)"
+        echo "Processing event: $EVENT_TYPE ($ACTION_TYPE), Private: $IS_PRIVATE"
         
         # 初始化默认值
         TITLE="📢 GitHub 通知"
+        if [ "$IS_PRIVATE" == "true" ]; then TITLE="🔐 GitHub 私有通知"; fi
         COLOR=3447003
         DESCRIPTION=""
         FIELDS=""
