@@ -8,6 +8,12 @@
 |---|---|---|
 | **Discord Notification** | 发送中文格式的代码提交统计通知到 Discord | [查看文档](docs/discord-notify.md) |
 
+## 🔁 可用 Reusable Workflows 列表
+
+| Workflow 名称 | 描述 | 文档 |
+|---|---|---|
+| **Deploy Static Sites** | 将 `products/*` 静态站点增量部署到服务器并可选 reload nginx | [查看文档](docs/deploy-static-sites.md) |
+
 ## 🚀 如何在其他项目中使用
 
 ### 🤖 1. Agent 辅助集成 (推荐)
@@ -48,7 +54,7 @@ steps:
       fetch-depth: 2  # 统计变更需要历史记录
 
   - name: 发送 Discord 通知
-    uses: Time-Machine-Lab/TML-Github-Actions/actions/discord-github-notify@main
+    uses: Time-Machine-Lab/TML-Github_Actions/actions/discord-github-notify@main
     with:
       webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
 ```
@@ -61,10 +67,14 @@ steps:
 
 ```yaml
 jobs:
-  build:
-    uses: Time-Machine-Lab/TML-Github-Actions/.github/workflows/maven-build.yml@main
+  deploy:
+    uses: Time-Machine-Lab/TML-Github_Actions/.github/workflows/deploy-static-sites.yml@main
     with:
-      java-version: '17'
+      force_deploy: false
+    secrets:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_PASS: ${{ secrets.SERVER_PASS }}
 ```
 
 ## 目录结构
