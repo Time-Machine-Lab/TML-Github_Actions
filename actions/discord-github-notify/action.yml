@@ -51,7 +51,7 @@ runs:
             \"color\": 3447003,
             \"url\": \"$REPO_URL\",
             \"fields\": [
-              {\"name\": \"📦 仓库地址\", \"value\": \"[$REPO_URL]($REPO_URL)\", \"inline\": false},
+              {\"name\": \"📦 仓库地址\", \"value\": \"$REPO_URL\", \"inline\": false},
               {\"name\": \"🌿 分支\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
               {\"name\": \"👤 提交者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
               {\"name\": \"💬 提交信息\", \"value\": \"$COMMIT_MSG\", \"inline\": false},
