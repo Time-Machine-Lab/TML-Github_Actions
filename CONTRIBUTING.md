@@ -1,7 +1,7 @@
 # 贡献指南
 
 ## 添加新的 Action
-
+0. 如果有agent可以直接让agent使用当前项目目录下的SKILLS.md文件
 1. 在 `actions/` 目录下创建一个新目录。
 2. 创建 `action.yml` 文件。
 3. 编写实现代码。

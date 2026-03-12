@@ -10,9 +10,30 @@
 
 ## 🚀 如何在其他项目中使用
 
-要将本仓库的 Action 安装到你的项目中，你不需要下载任何代码，只需在你的项目 `.github/workflows/` 下的 YAML 文件中引用即可。
+### 🤖 1. Agent 辅助集成 (推荐)
 
-### 1. 引用 Action (uses)
+如果你正在使用 AI 编程助手（如 Trae, Copilot, Cursor 等），复制以下 **Prompt (提示词)** 发送给它，并将 `{{工作流名称}}` 替换为你想要安装的 Action（例如 `Discord Notification`）：
+
+> **请帮我集成 GitHub Actions 工作流。**
+>
+> **来源仓库**：`https://github.com/Time-Machine-Lab/TML-Github_Actions`
+> **目标 Action**：`{{工作流名称}}`
+>
+> **任务要求**：
+> 1. **阅读文档**：请访问上述仓库，查阅 `actions/` 目录下对应的 `action.yml` 定义以及 `docs/` 目录下的使用文档。
+> 2. **生成配置**：在当前项目中生成一个新的 Workflow 文件（如 `.github/workflows/{{工作流名称}}.yml`）。
+> 3. **智能配置**：
+>    - 确保引用路径正确（参考文档中的 `uses` 路径）。
+>    - 根据文档自动配置所有必要的 `inputs` 和 `secrets`。
+>    - 检查是否需要特殊的步骤（例如文档中提到的 `checkout fetch-depth` 等前置要求）。
+>
+> **请生成完整的 YAML 文件内容，并提醒我需要配置哪些 Repository Secrets。**
+
+---
+
+### 2. 手动引用 Action (uses)
+
+要将本仓库的 Action 安装到你的项目中，你不需要下载任何代码，只需在你的项目 `.github/workflows/` 下的 YAML 文件中引用即可。
 
 在你的 Workflow `steps` 中使用 `uses` 关键字引用本仓库的具体路径。
 
@@ -32,7 +53,7 @@ steps:
       webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
 ```
 
-### 2. 引用 Reusable Workflow
+### 3. 引用 Reusable Workflow
 
 如果本仓库提供了完整的流程模板（在 `.github/workflows/` 下），可以在 `jobs` 层级引用。
 
