@@ -1,5 +1,5 @@
 name: 'Discord 通知 (中文版)'
-description: '发送包含 Git 提交统计信息的 Discord 通知，支持中文展示'
+description: '发送 Git 提交、PR 变更或 Release 发布的 Discord 通知，支持中文展示'
 inputs:
   webhook_url:
     description: 'Discord Webhook URL'
@@ -12,59 +12,167 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: 获取提交统计
-      id: stats
+    - name: 获取事件类型与统计
+      id: info
       shell: bash
       run: |
-        # 检查是否有足够的提交历史
-        if git rev-parse HEAD~1 >/dev/null 2>&1; then
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | wc -l | tr -d ' ')
-          # 使用 grep -P 提取数字，如果失败则默认为 0
-          ADDITIONS=$(git diff --shortstat HEAD~1 HEAD | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-          DELETIONS=$(git diff --shortstat HEAD~1 HEAD | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)
-        else
-          echo "历史提交不足，跳过统计"
-          CHANGED_FILES=1
-          ADDITIONS=0
-          DELETIONS=0
-        fi
+        EVENT_TYPE="${{ github.event_name }}"
+        ACTION_TYPE="${{ github.event.action }}"
         
-        echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
-        echo "additions=$ADDITIONS" >> $GITHUB_OUTPUT
-        echo "deletions=$DELETIONS" >> $GITHUB_OUTPUT
+        echo "Processing event: $EVENT_TYPE ($ACTION_TYPE)"
+        
+        # 初始化默认值
+        TITLE="📢 GitHub 通知"
+        COLOR=3447003
+        DESCRIPTION=""
+        FIELDS=""
+        TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        # ------------------------------------------------------------------
+        # 1. PUSH 事件处理
+        # ------------------------------------------------------------------
+        if [ "$EVENT_TYPE" == "push" ]; then
+            TITLE="🚀 代码提交通知: ${{ github.repository }}"
+            COLOR=3447003
+            
+            # 尝试统计代码行数 (前提是 checkout depth >= 2)
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+                CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | wc -l | tr -d ' ')
+                ADDITIONS=$(git diff --shortstat HEAD~1 HEAD | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+                DELETIONS=$(git diff --shortstat HEAD~1 HEAD | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)
+            else
+                CHANGED_FILES="N/A"
+                ADDITIONS="0"
+                DELETIONS="0"
+            fi
+            
+            COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g' | tr -d '\n')
+            
+            # 构造 Fields
+            FIELDS="[
+                {\"name\": \"🌿 分支\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
+                {\"name\": \"👤 提交者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
+                {\"name\": \"💬 提交信息\", \"value\": \"$COMMIT_MSG\", \"inline\": false},
+                {\"name\": \"📊 变更文件\", \"value\": \"$CHANGED_FILES\", \"inline\": true},
+                {\"name\": \"➕ 新增\", \"value\": \"$ADDITIONS\", \"inline\": true},
+                {\"name\": \"➖ 删除\", \"value\": \"$DELETIONS\", \"inline\": true},
+                {\"name\": \"🔗 Commit\", \"value\": \"[查看详情](${{ github.event.head_commit.url }})\", \"inline\": false}
+            ]"
+            TIMESTAMP="${{ github.event.head_commit.timestamp }}"
+
+        # ------------------------------------------------------------------
+        # 2. PULL REQUEST 事件处理 (Open / Reopen / Close / Merge)
+        # ------------------------------------------------------------------
+        elif [ "$EVENT_TYPE" == "pull_request" ]; then
+            PR_TITLE=$(echo "${{ github.event.pull_request.title }}" | sed 's/"/\\"/g')
+            PR_URL="${{ github.event.pull_request.html_url }}"
+            PR_NUMBER="#${{ github.event.pull_request.number }}"
+            PR_USER="${{ github.event.pull_request.user.login }}"
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+            HEAD_REF="${{ github.event.pull_request.head.ref }}"
+            
+            if [ "$ACTION_TYPE" == "opened" ] || [ "$ACTION_TYPE" == "reopened" ]; then
+                TITLE="🔀 新增 PR 待检视: $PR_NUMBER"
+                COLOR=15105570 # Orange
+                DESCRIPTION="**$PR_TITLE**"
+                FIELDS="[
+                    {\"name\": \"👤 发起人\", \"value\": \"$PR_USER\", \"inline\": true},
+                    {\"name\": \"🎯 目标分支\", \"value\": \"$BASE_REF\", \"inline\": true},
+                    {\"name\": \"🌿 源分支\", \"value\": \"$HEAD_REF\", \"inline\": true},
+                    {\"name\": \"🔗 PR 链接\", \"value\": \"[查看详情]($PR_URL)\", \"inline\": false}
+                ]"
+                
+            elif [ "$ACTION_TYPE" == "closed" ]; then
+                if [ "${{ github.event.pull_request.merged }}" == "true" ]; then
+                    TITLE="✅ PR 已合并: $PR_NUMBER"
+                    COLOR=5763719 # Green
+                    DESCRIPTION="**$PR_TITLE**"
+                    FIELDS="[
+                        {\"name\": \"👤 合并者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
+                        {\"name\": \"� 合入分支\", \"value\": \"$BASE_REF\", \"inline\": true},
+                        {\"name\": \"🔗 PR 链接\", \"value\": \"[查看详情]($PR_URL)\", \"inline\": false}
+                    ]"
+                else
+                    TITLE="⛔ PR 已关闭 (未合并): $PR_NUMBER"
+                    COLOR=15548997 # Red
+                    DESCRIPTION="**$PR_TITLE**"
+                    FIELDS="[
+                        {\"name\": \"👤 操作者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
+                        {\"name\": \"� PR 链接\", \"value\": \"[查看详情]($PR_URL)\", \"inline\": false}
+                    ]"
+                fi
+            fi
+
+        # ------------------------------------------------------------------
+        # 3. RELEASE 事件处理
+        # ------------------------------------------------------------------
+        elif [ "$EVENT_TYPE" == "release" ] && [ "$ACTION_TYPE" == "published" ]; then
+            TITLE="🎉 新版本发布: ${{ github.event.release.tag_name }}"
+            COLOR=10181046 # Purple
+            RELEASE_URL="${{ github.event.release.html_url }}"
+            IS_PRERELEASE="${{ github.event.release.prerelease }}"
+            
+            TYPE_TEXT="正式版"
+            if [ "$IS_PRERELEASE" == "true" ]; then
+                TYPE_TEXT="预发布版 (Pre-release)"
+            fi
+            
+            FIELDS="[
+                {\"name\": \"📦 版本类型\", \"value\": \"$TYPE_TEXT\", \"inline\": true},
+                {\"name\": \"👤 发布者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
+                {\"name\": \"🔗 Release 链接\", \"value\": \"[查看发行说明]($RELEASE_URL)\", \"inline\": false}
+            ]"
+        fi
+
+        # ------------------------------------------------------------------
+        # 4. 输出变量
+        # ------------------------------------------------------------------
+        # 处理可能为空的情况，保证 JSON 格式有效
+        if [ -z "$FIELDS" ]; then FIELDS="[]"; fi
+        
+        echo "title=$TITLE" >> $GITHUB_OUTPUT
+        echo "color=$COLOR" >> $GITHUB_OUTPUT
+        echo "description=$DESCRIPTION" >> $GITHUB_OUTPUT
+        echo "fields=$FIELDS" >> $GITHUB_OUTPUT
+        echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
 
     - name: 发送 Discord 通知
       shell: bash
       env:
         DISCORD_WEBHOOK: ${{ inputs.webhook_url }}
         REPO_URL: "${{ github.server_url }}/${{ github.repository }}"
+        TITLE: ${{ steps.info.outputs.title }}
+        COLOR: ${{ steps.info.outputs.color }}
+        DESCRIPTION: ${{ steps.info.outputs.description }}
+        FIELDS: ${{ steps.info.outputs.fields }}
+        TIMESTAMP: ${{ steps.info.outputs.timestamp }}
       run: |
+        # 仅当有 Title 时才发送通知（过滤掉不支持的事件）
+        if [ "$TITLE" == "📢 GitHub 通知" ] && [ "$FIELDS" == "[]" ]; then
+          echo "No supported event detected, skipping notification."
+          exit 0
+        fi
+
         # 构建 JSON Payload
-        # 注意：Shell 变量和 GitHub Context 的混合使用
-        
-        COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g' | tr -d '\n')
-        
-        curl -H "Content-Type: application/json" \
-        -d "{
-          \"embeds\": [{
-            \"title\": \"🚀 代码提交通知: ${{ github.repository }}\",
-            \"color\": 3447003,
-            \"url\": \"$REPO_URL\",
-            \"fields\": [
-              {\"name\": \"📦 仓库地址\", \"value\": \"$REPO_URL\", \"inline\": false},
-              {\"name\": \"🔗 Commit 链接\", \"value\": \"[点击查看](${{ github.event.head_commit.url }})\", \"inline\": false},
-              {\"name\": \"🌿 分支\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
-              {\"name\": \"👤 提交者\", \"value\": \"${{ github.actor }}\", \"inline\": true},
-              {\"name\": \"💬 提交信息\", \"value\": \"$COMMIT_MSG\", \"inline\": false},
-              {\"name\": \"📊 变更文件数\", \"value\": \"${{ steps.stats.outputs.files }}\", \"inline\": true},
-              {\"name\": \"➕ 新增行数\", \"value\": \"${{ steps.stats.outputs.additions }}\", \"inline\": true},
-              {\"name\": \"➖ 删除行数\", \"value\": \"${{ steps.stats.outputs.deletions }}\", \"inline\": true}
-            ],
-            \"footer\": {
-              \"text\": \"由 GitHub Actions 自动发送\",
-              \"icon_url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
+        # 注意：FIELDS 本身已经是 JSON 字符串，所以不能加引号
+        JSON_PAYLOAD=$(cat <<EOF
+        {
+          "embeds": [{
+            "title": "$TITLE",
+            "color": $COLOR,
+            "url": "$REPO_URL",
+            "description": "$DESCRIPTION",
+            "fields": $FIELDS,
+            "footer": {
+              "text": "由 GitHub Actions 自动发送",
+              "icon_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
             },
-            \"timestamp\": \"${{ github.event.head_commit.timestamp }}\"
+            "timestamp": "$TIMESTAMP"
           }]
-        }" \
+        }
+        EOF
+        )
+
+        curl -H "Content-Type: application/json" \
+        -d "$JSON_PAYLOAD" \
         "$DISCORD_WEBHOOK"
