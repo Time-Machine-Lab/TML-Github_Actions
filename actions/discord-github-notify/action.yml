@@ -130,6 +130,9 @@ runs:
         # 处理可能为空的情况，保证 JSON 格式有效
         if [ -z "$FIELDS" ]; then FIELDS="[]"; fi
         
+        # 将 FIELDS 压缩为单行，避免多行字符串导致 GITHUB_OUTPUT 写入失败
+        FIELDS=$(echo "$FIELDS" | tr -d '\n' | tr -s ' ')
+
         echo "title=$TITLE" >> $GITHUB_OUTPUT
         echo "color=$COLOR" >> $GITHUB_OUTPUT
         echo "description=$DESCRIPTION" >> $GITHUB_OUTPUT
