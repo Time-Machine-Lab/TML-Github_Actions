@@ -92,3 +92,7 @@ jobs:
 brew install act
 act -l
 ```
+
+## Additional Action Docs
+
+- [Publish Node Package](docs/publish-node-package.md): Install dependencies, build a package, derive version from the Git tag, and publish to a custom npm registry.

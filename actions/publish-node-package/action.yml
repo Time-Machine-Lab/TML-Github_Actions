@@ -1,0 +1,161 @@
+name: 'Publish Node Package'
+description: 'Install, build, version from tag, and publish an npm package to a custom registry.'
+
+inputs:
+  working_directory:
+    description: 'Package directory relative to the repository root.'
+    required: false
+    default: '.'
+  node_version:
+    description: 'Node.js version passed to actions/setup-node.'
+    required: false
+    default: '20.x'
+  cache_dependency_path:
+    description: 'Lockfile path used by actions/setup-node cache.'
+    required: false
+    default: 'package-lock.json'
+  build_command:
+    description: 'Command used to build the package. Leave empty to skip.'
+    required: false
+    default: 'npm run build'
+  publish_command:
+    description: 'Command used to publish the package. Leave empty to skip.'
+    required: false
+    default: 'npm publish'
+  tag_prefix:
+    description: 'Prefix removed from github.ref_name before writing package.json version.'
+    required: false
+    default: 'v'
+  registry_url:
+    description: 'Registry URL. Pass from a repository secret.'
+    required: true
+  npm_token:
+    description: 'Registry auth token. Pass from a repository secret.'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+    - name: Validate publish configuration
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
+        REGISTRY_URL: ${{ inputs.registry_url }}
+        NPM_TOKEN: ${{ inputs.npm_token }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$WORKING_DIRECTORY" ]; then
+          echo "Missing required input: working_directory" >&2
+          exit 1
+        fi
+
+        if [ ! -d "$WORKING_DIRECTORY" ]; then
+          echo "working_directory does not exist: $WORKING_DIRECTORY" >&2
+          exit 1
+        fi
+
+        if [ -z "$REGISTRY_URL" ]; then
+          echo "Missing required input: registry_url" >&2
+          exit 1
+        fi
+
+        if [ -z "$NPM_TOKEN" ]; then
+          echo "Missing required input: npm_token" >&2
+          exit 1
+        fi
+
+        RAW_TAG="${GITHUB_REF_NAME:-}"
+        if [ -z "$RAW_TAG" ]; then
+          echo "GITHUB_REF_NAME is empty; this action expects a tag-triggered workflow." >&2
+          exit 1
+        fi
+
+        if [ -n "$TAG_PREFIX" ] && [[ "$RAW_TAG" != "$TAG_PREFIX"* ]]; then
+          echo "Tag '$RAW_TAG' does not start with expected prefix '$TAG_PREFIX'." >&2
+          exit 1
+        fi
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        npm ci
+
+    - name: Build package
+      if: ${{ inputs.build_command != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        BUILD_COMMAND: ${{ inputs.build_command }}
+      run: |
+        set -euo pipefail
+        eval "$BUILD_COMMAND"
+
+    - name: Set package version from tag
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
+      run: |
+        set -euo pipefail
+
+        RAW_TAG="${GITHUB_REF_NAME}"
+        VERSION="$RAW_TAG"
+
+        if [ -n "$TAG_PREFIX" ]; then
+          case "$RAW_TAG" in
+            "$TAG_PREFIX"*)
+              VERSION="${RAW_TAG#$TAG_PREFIX}"
+              ;;
+            *)
+              echo "Unable to derive package version from tag: $RAW_TAG" >&2
+              exit 1
+              ;;
+          esac
+        fi
+
+        if [ -z "$VERSION" ]; then
+          echo "Derived package version is empty for tag: $RAW_TAG" >&2
+          exit 1
+        fi
+
+        npm pkg set version="$VERSION"
+
+    - name: Configure npm registry
+      shell: bash
+      env:
+        REGISTRY_URL: ${{ inputs.registry_url }}
+        NPM_TOKEN: ${{ inputs.npm_token }}
+      run: |
+        set -euo pipefail
+
+        REGISTRY_HOST="${REGISTRY_URL#https://}"
+        REGISTRY_HOST="${REGISTRY_HOST#http://}"
+        REGISTRY_HOST="${REGISTRY_HOST%/}"
+
+        cat <<EOF > ~/.npmrc
+        registry=${REGISTRY_URL}
+        //${REGISTRY_HOST}/:_authToken=${NPM_TOKEN}
+        always-auth=true
+        EOF
+
+    - name: Publish package
+      if: ${{ inputs.publish_command != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        PUBLISH_COMMAND: ${{ inputs.publish_command }}
+        NODE_AUTH_TOKEN: ${{ inputs.npm_token }}
+      run: |
+        set -euo pipefail
+        eval "$PUBLISH_COMMAND"
