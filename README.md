@@ -22,7 +22,7 @@
 
 > **请帮我集成 GitHub Actions 工作流。**
 >
-> **来源仓库**：`https://github.com/Time-Machine-Lab/TML-Github_Actions`
+> **来源仓库**：`https://github.com/Time-Machine-Lab/TML_Github_Actions`
 > **目标 Action**：`{{工作流名称}}`
 >
 > **任务要求**：
